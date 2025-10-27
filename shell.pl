@@ -55,7 +55,6 @@ resolve_title(UserIn0, Canonical) :-
   string_trim(UserIn0, T1),
   strip_quotes(T1, T2),
   string_lower(T2, IL),
-  % gather all exact (case-insensitive) matches from KB
   findall(TC,
           ( anime_fact(_, TC, _, _, _, _, _),
             ( string(TC) -> TCS = TC ; atom_string(TC, TCS) ),
@@ -64,8 +63,70 @@ resolve_title(UserIn0, Canonical) :-
           ),
           Matches),
   Matches \= [],
-  % choose the first canonical match
   Matches = [Canonical|_].
+
+% ===================================================================
+% --- 2.2 Genre browser (counts + selection)
+% ===================================================================
+
+% Build Count-Genre pairs (sorted by count desc)
+genre_counts_sorted(PairsDesc) :-
+  all_genres(Genres),  % from main.pl
+  findall(C-G,
+          ( member(G, Genres),
+            findall(T, has_genre_ci(T, G), Ts), % from main.pl
+            length(Ts, C)
+          ),
+          Pairs),
+  keysort(Pairs, Asc), reverse(Asc, PairsDesc).
+
+print_genre_counts(Pairs) :- print_genre_counts(1, Pairs).
+print_genre_counts(_, []).
+print_genre_counts(I, [C-G|R]) :-
+  format('(~w) ~w  [~w titles]~n', [I, G, C]),
+  I1 is I + 1, print_genre_counts(I1, R).
+
+% Interactive: ask for a genre with "?" to list + numeric pick
+ask_genre_interactive(Genre) :-
+  format('> Preferred genre (e.g., "Comedy", "Action").~n'),
+  format('  Tip: type "?" to list all genres with counts, or enter a number from that list.~n'),
+  ask_genre_loop(Genre).
+
+ask_genre_loop(Genre) :-
+  format('> '),
+  read_line_to_string(user_input, G0),
+  string_trim(G0, G1),
+  ( G1 = "" ->
+      format('Please enter a genre or "?" to list them.~n'),
+      ask_genre_loop(Genre)
+  ; G1 = "?" ->
+      nl, format('--- Available Genres ---~n'),
+      genre_counts_sorted(Ps),
+      print_genre_counts(Ps),
+      format('------------------------~n'),
+      ask_pick_genre_from_pairs(Ps, Genre)
+  ; catch(number_string(N, G1), _, fail) ->
+      genre_counts_sorted(Ps),
+      ( nth1(N, Ps, _C-G), Genre = G -> true
+      ; format('Index out of range.~n'), ask_genre_loop(Genre)
+      )
+  ; Genre = G1
+  ).
+
+ask_pick_genre_from_pairs(Pairs, Genre) :-
+  format('Choose a genre by number, or type a name, or "?" to re-list:~n> '),
+  read_line_to_string(user_input, In0),
+  string_trim(In0, In),
+  ( In = "" -> format('Please choose.~n'), ask_pick_genre_from_pairs(Pairs, Genre)
+  ; In = "?" ->
+      nl, print_genre_counts(Pairs),
+      ask_pick_genre_from_pairs(Pairs, Genre)
+  ; catch(number_string(N, In), _, fail) ->
+      ( nth1(N, Pairs, _C-G), Genre = G -> true
+      ; format('Out of range.~n'), ask_pick_genre_from_pairs(Pairs, Genre)
+      )
+  ; Genre = In
+  ).
 
 % ===================================================================
 % --- 3. ENTRY POINT & MENU LOOP
@@ -119,7 +180,7 @@ find_and_display_recs(Prefs, AgeOpt, BucketOpt) :-
   findall(Score-Title, calculate_score(Prefs, Title, Score), Pairs0),
   keysort(Pairs0, SortedAsc),
   reverse(SortedAsc, SortedDesc),
-  take_first(10, SortedDesc, TopPairs),          % show up to 10 before filters
+  take_first(10, SortedDesc, TopPairs),
   pairs_values(TopPairs, Titles0),
   apply_age_filter(AgeOpt, Titles0, Titles1),
   apply_length_filter(BucketOpt, Titles1, Titles2),
@@ -228,7 +289,6 @@ cmd_watchlist :-
       ( L = [] ->
           format('Watchlist is empty.~n')
       ; nl, format('--- Your Watchlist ---~n'),
-        % safe print: never fail even if a title can’t be resolved
         forall(member(TT, L), print_card(TT)),
         watchlist_total_hours(H),
         format('Total watch time approx. ~1f hours (24 min/ep).~n', [H]),
@@ -248,8 +308,7 @@ cmd_watchlist :-
 % ===================================================================
 
 ask_preferences(prefs(Genre, MinScore, MaxEps)) :-
-  format('> Preferred genre (e.g., "Comedy", "Action"):~n> '),
-  read_line_to_string(user_input, Genre),
+  ask_genre_interactive(Genre),
   prompt_number('> Minimum MAL score (0.0 - 10.0, default 0): ', 0.0, 10.0, 0.0, MinScore),
   prompt_int('> Maximum episodes (e.g., 26; default 9999): ', 1, 100000, 9999, MaxEps).
 
@@ -321,8 +380,7 @@ print_card(Title0) :-
       format('    Episodes: ~w | Score: ~w | Studio: ~w | Rating: ~w~n', [Eps, S, Studio, Rating]),
       format('    Genres: ~w~n', [Genres]),
       ( watchlist(Title0) -> format('    On your watchlist~n') ; true )
-  ; % fallback — title in watchlist but not in KB, so don’t fail the whole print
-    format('~n[+] ~w~n', [Title0]),
+  ; format('~n[+] ~w~n', [Title0]),
     format('    (details unavailable in KB)~n')
   ).
 
@@ -346,8 +404,7 @@ choose_title_from(L, TOut) :-
   read_line_to_string(user_input, In0),
   ( catch(number_string(N, In0), _, fail), integer(N), N >= 1, N =< Len ->
       nth1(N, L, TOut)
-  ; % case-insensitive exact against the shown list (decode first)
-    string_trim(In0, In1), strip_quotes(In1, In2), string_lower(In2, IL),
+  ; string_trim(In0, In1), strip_quotes(In1, In2), string_lower(In2, IL),
     member(T, L),
     to_s(T, TS),
     decode_html_entities(TS, TD),
@@ -397,11 +454,11 @@ help :-
   nl,
   format('--- Help ---~n'),
   format('1. Recommend: Enter genre, min score, and max episodes. Optional age and length filters.~n'),
-  format('   Results include an explanation of the score breakdown (genre + score + length).~n'),
+  format('   - At the genre prompt, type \"?\" to see all genres with counts, and pick by number or name.~n'),
+  format('   - Results include an explanation of the score breakdown (genre + score + length).~n'),
   format('2. Surprise me: Give a genre; picks a short, >= 7.0 item at random (or just press ENTER for any).~n'),
   format('3. Top charts: Show top-scoring items; optionally filter by genre and length.~n'),
   format('4. Search titles: Substring search; print cards; you can add to watchlist (by index or title).~n'),
   format('5. Watchlist: Add/remove/show/clear and total time (24 min per episode).~n'),
-  format('   - Tip: when adding manually, title matching is case-insensitive; quotes/spaces are ignored.~n'),
   format('0. Quit: Exit the program.~n'),
   format('--------------~n').

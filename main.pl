@@ -225,7 +225,6 @@ watch_time(Title, MinutesPerEp, Mins, Hours) :-
 watch_time(Title, Mins, Hours) :- watch_time(Title, 24, Mins, Hours).
 
 % --- 3.5 Utility Rules (for UI) ---
-
 all_genres(Genres) :-
     setof(G,
           Title^GenresList^(
